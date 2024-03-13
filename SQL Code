@@ -1,0 +1,78 @@
+Subquery to select the relevant columns, unnest the event_params column and unify traffic sources
+
+WITH FlattenedParams AS (
+  SELECT
+    user_pseudo_id,
+    PARSE_DATE('%Y%m%d', event_date) AS event_date,
+    event_params_unnest,
+    CASE
+      WHEN traffic_source.source LIKE '%facebook.com' THEN 'Facebook'
+      WHEN traffic_source.source LIKE '%tiktok%' THEN 'TikTok'
+      WHEN traffic_source.source LIKE '%linktr%' OR traffic_source.source = '%instagram%' OR traffic_source.source = 'l.instagram.com' OR traffic_source.source = 'instagram.com' THEN 'Instagram'
+      WHEN traffic_source.source LIKE 'google' THEN 'Google'
+      WHEN traffic_source.source LIKE '(direct)' THEN 'Direto'
+      WHEN traffic_source.source LIKE 'lens.google.com' THEN 'Google Lens'
+      ELSE traffic_source.source
+    END AS traffic_source
+  FROM `primeiro-projeto-sprint1.analytics_280426703.events_*`,
+    UNNEST(event_params) AS event_params_unnest
+),
+
+
+Table to filter out all parameters that are not the page title.
+
+page_title_filter AS (
+SELECT DISTINCT
+  user_pseudo_id,
+  event_date,
+  event_params_unnest.key AS event_parameter,
+  event_params_unnest.value.string_value AS page_title,
+  traffic_source,
+FROM FlattenedParams
+WHERE event_params_unnest.key = 'page_title'),
+
+
+Table to calculate the total number of users 
+
+first_page  AS (
+SELECT
+COUNT(user_pseudo_id) AS first_page_users,
+traffic_source
+FROM(
+SELECT 
+DISTINCT(user_pseudo_id) AS user_pseudo_id,
+event_date,
+traffic_source
+FROM page_title_filter
+ORDER BY user_pseudo_id)
+GROUP BY traffic_source),
+
+
+Table to calculate only the users that viewed a product on the website. A window function was used to include only one product, otherwise a user that viewed several products would be counted as several, instead of only one, so the window function excludes the rows that contains the same user and event with different page titles. The where clause uses a sign != to filter out all the rows that contains the main page as page title, leaving only customers that visualized a product. 
+
+only_converted AS (
+SELECT 
+COUNT(user_pseudo_id) AS converted_users,
+traffic_source
+FROM(
+SELECT 
+user_pseudo_id,
+event_date,
+event_parameter,
+page_title,
+traffic_source,
+ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, event_date) AS row_clean
+FROM page_title_filter
+WHERE page_title != 'Carolina Romano Peixoto')
+WHERE row_clean = 1
+GROUP BY traffic_source)
+
+
+All users and converted users were joined in this table, and the conversion rate was calculated 
+
+SELECT 
+converted_users / first_page_users AS conversion_rate,
+first_page.traffic_source
+FROM first_page
+JOIN only_converted
+ON first_page.traffic_source = only_converted.traffic_source
